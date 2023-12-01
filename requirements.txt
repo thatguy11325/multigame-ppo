@@ -1,0 +1,7 @@
+numpy
+setuptools
+stable-baselines3
+stable-retro
+tensorboard
+torch
+wheel

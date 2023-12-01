@@ -1,0 +1,4 @@
+-r requirements.txt
+nvitop
+pre-commit
+ruff

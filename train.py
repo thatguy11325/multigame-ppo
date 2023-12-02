@@ -1,7 +1,7 @@
 import argparse
 from typing import Optional
 
-import gymnasium
+import gymnasium as gym
 import numpy as np
 import retro
 import torch
@@ -9,9 +9,8 @@ from gymnasium.wrappers.time_limit import TimeLimit
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env.base_vec_env import VecEnvStepReturn
 from stable_baselines3.common.vec_env import (
-  DummyVecEnv,
+  SubprocVecEnv,
   VecFrameStack,
-  VecTransposeImage,
   VecEnv,
   VecEnvWrapper,
 )
@@ -31,25 +30,25 @@ class YolosWrapper(VecEnvWrapper):
     self.model = YolosForObjectDetection.from_pretrained("hustvl/yolos-small")
     self.model.eval()
     self.model.to(device)
+    self.observation_space = gym.spaces.Box(low=0, high=1, shape=(231, 384), dtype=np.float32)
+
+  def inference(self, obs: np.ndarray) -> np.ndarray:
+    pixel_values = self.image_processor(obs, return_tensors="pt").pixel_values.to(self.device)
+    with torch.no_grad():
+      inference = self.model(pixel_values).last_hidden_state.squeeze().detach().to("cpu").numpy()
+      return inference
 
   def reset(self) -> np.ndarray:
-    return self.venv.reset()
+    return self.inference(self.venv.reset())
 
   def step_wait(self) -> VecEnvStepReturn:
-    observations, rewards, dones, infos = self.venv.step_wait()
-
-    # Pad the observation to the yolos 224x224 format
-    # Dimensions of obs should be
-    pixel_values = self.image_processor(observations, return_tensors="pt").pixel_values.to(
-      args.device
+    obs, rewards, dones, infos = self.venv.step_wait()
+    return (
+      self.inference(obs),
+      rewards,
+      dones,
+      infos,
     )
-    with torch.no_grad():
-      return (
-        self.model(pixel_values).last_hidden_state.unsqueeze(-1).repeat(1, 1, 1, 3).detach().cpu(),
-        rewards,
-        dones,
-        infos,
-      )
 
 
 def make_retro(
@@ -69,7 +68,7 @@ def make_retro(
   return env
 
 
-def wrap_deepmind_retro(env: gymnasium.Env):
+def wrap_deepmind_retro(env: gym.Env):
   """
   Configure environment for retro games, using config similar to DeepMind-style Atari in openai/baseline's wrap_deepmind
   """
@@ -89,43 +88,43 @@ if __name__ == "__main__":
   )
   parser.add_argument("--device", choices=["cuda", "cpu"])
   parser.add_argument("--n-stack", type=int, help="Number of frames to stack", default=4)
+  parser.add_argument("--render-mode", choices=["rgb_array", "human"], default="rgb_array")
   args = parser.parse_args()
 
   # Note the YolosWrapper could be post frame stacking. Not sure that will work for cheap GPUs
   # + it's annoying to think about the reshape math unless I make a fused wrapper
   # Probably should roll out my own custom env tbh...
-  venv = VecTransposeImage(
-    VecFrameStack(
-      YolosWrapper(
-        DummyVecEnv(
-          [
-            lambda: make_retro(
-              game="Breakout-Atari2600",
-              roms_path=args.roms_path,
-              render_mode="rgb_array",
-              record=True,
-            ),
-            # lambda: make_retro(
-            #     game="Qbert-Atari2600", roms_path=args.roms_path
-            # ),
-            # lambda: make_retro(
-            #     game="SpaceInvaders-Atari2600", roms_path=args.roms_path
-            # ),
-          ]
-          * 1
-        ),
-        device=args.device,
+  venv = VecFrameStack(
+    YolosWrapper(
+      SubprocVecEnv(
+        [
+          lambda: make_retro(
+            game="Breakout-Atari2600",
+            roms_path=args.roms_path,
+            render_mode=args.render_mode,
+            record=True,
+          ),
+          # lambda: make_retro(
+          #     game="Qbert-Atari2600", roms_path=args.roms_path
+          # ),
+          # lambda: make_retro(
+          #     game="SpaceInvaders-Atari2600", roms_path=args.roms_path
+          # ),
+        ]
+        * 4
       ),
-      n_stack=args.n_stack,
-    )
+      device=args.device,
+    ),
+    n_stack=args.n_stack,
+    channels_order="first",
   )
   model = PPO(
-    policy="CnnPolicy",
+    policy="MlpPolicy",
     env=venv,
     learning_rate=lambda f: f * 2.5e-4,
-    n_steps=128,
+    n_steps=512,
     batch_size=4,
-    n_epochs=4,
+    n_epochs=4096,
     gamma=0.99,
     gae_lambda=0.95,
     clip_range=0.1,

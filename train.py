@@ -30,12 +30,12 @@ class YolosWrapper(VecEnvWrapper):
     self.model = YolosForObjectDetection.from_pretrained("hustvl/yolos-small")
     self.model.eval()
     self.model.to(device)
-    self.observation_space = gym.spaces.Box(low=0, high=1, shape=(231, 384), dtype=np.float32)
+    self.observation_space = gym.spaces.Box(low=0, high=1, shape=(1, 231, 384), dtype=np.float32)
 
   def inference(self, obs: np.ndarray) -> np.ndarray:
     pixel_values = self.image_processor(obs, return_tensors="pt").pixel_values.to(self.device)
     with torch.no_grad():
-      inference = self.model(pixel_values).last_hidden_state.squeeze().detach().to("cpu").numpy()
+      inference = self.model(pixel_values).last_hidden_state.detach().to("cpu").numpy()
       return inference
 
   def reset(self) -> np.ndarray:
@@ -119,10 +119,10 @@ if __name__ == "__main__":
     channels_order="first",
   )
   model = PPO(
-    policy="MlpPolicy",
+    policy="CnnPolicy",
     env=venv,
     learning_rate=lambda f: f * 2.5e-4,
-    n_steps=512,
+    n_steps=128,
     batch_size=4,
     n_epochs=4096,
     gamma=0.99,
@@ -131,6 +131,7 @@ if __name__ == "__main__":
     ent_coef=0.01,
     verbose=1,
     device=args.device,
+    policy_kwargs={"normalize_images": False},
   )
   model.learn(
     total_timesteps=100_000_000,
